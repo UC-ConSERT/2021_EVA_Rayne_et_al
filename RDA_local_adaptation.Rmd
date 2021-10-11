@@ -1,0 +1,413 @@
+---
+title: Detecting local adaptation using Redundancy Analysis (RDA) in freshwater kōura (*Paranephrops zealandicus*)
+author: "Aisling Rayne"
+date: "Sept 2021"
+---
+
+The following is adapted from Brauer et al. (2018)'s script for RDA (available at https://github.com/pygmyperch/GEA_workshop/blob/master/workshop_data/MfRDA.R), a vignette based on Forester et al. (2018) (available at https://popgen.nescent.org/2018-03-27_RDA_GEA.html), and scripts associated with Capblancq and Forester (2021) (https://github.com/Capblancq/RDA-landscape-genomics).
+
+## 1. Load and prepare genotype and environment data
+Load packages.
+```{r setup, include = FALSE}
+library(psych)    # Used to investigate correlations among predictors
+library(vegan)    # Used to run RDA
+library(adegenet)
+library(dartR)
+library(vcfR)
+library(robust)
+library(LEA)
+library(lfmm)
+library(qvalue)
+setwd("/Users/aislingrayne/Documents/2021_08_03_EVA/03_RDA")
+```
+
+Read and prepare genotype data.
+```{r read in data, include = FALSE}
+vcf <- read.vcfR('finalsnpsMAC2.vcf', verbose = TRUE)
+x <- vcfR2genlight(vcf)
+x.gl <- gl.drop.ind(x, ind.list=c("KEE2-2019-030", "KEE2-2019-031", "KEE2-2019-032", "KEE2-2019-033", "KEE2-2019-034", "KEE1-2019-041", "KEE1-2019-042", "KEE1-2019-043", "KEE1-2019-044", "KEE1-2019-049", "KEE2-2019-050", "KEE2-2019-051", "KEE2-2019-052", "KEE2-2019-059", "KEE1-2019-062", "KEE1-2019-063", "KEE1-2019-064", "KEE1-2019-069", "KEE1-2019-070", "KEE2-2019-071", "LJA-2019-150", "LJA-2019-152", "LJA-2019-153", "LJA-2019-155", "LJA-2019-157", "LJA-2019-158", "LJA-2019-159", "LJA-2019-156R", "LJA-2020-369", "LJA-2020-370", "LJA-2020-371", "LJA-2020-372", "MUR-2020-276", "MAT-2020-294", "MAT-2020-296", "MAT-2020-298", "MAT-2020-299", "MAT-2020-301", "MAT-2020-302", "MAT-2020-303", "KAH-2020-319R"), recalc = TRUE, mono.rm = TRUE, verbose = NULL) # dropping individuals known or suspected to be admixed or translocated
+x.genind <- gl2gi(x.gl)
+x.genind
+alleles <- x.genind@tab
+alleles[1:10,1:10]
+colnames(alleles) <- paste(x@chromosome, colnames(alleles), sep = "_")
+allsnps <- alleles[,seq(1,ncol(alleles),2)]
+allsnps
+```
+```{r dimensions}
+dim(allsnps)
+```
+
+We have 118 individuals (rows) genotyped at 2606 SNPs (columns). How much missing data?
+```{r missing data}
+(sum(is.na(allsnps)))/(dim(allsnps)[1]*dim(allsnps)[2])*100 # 1,633 NAs in the matrix (~3% missing data)
+```
+
+Let's impute missing SNPs using a simple function:
+```{r impute missing data}
+gen <- apply(allsnps, 2, function(x) replace(x, is.na(x), as.numeric(names(which.max(table(x))))))
+sum(is.na(gen))
+```
+
+SNPs with a minor allele frequency inferior to 5% can be filtered out to avoid giving too much importance to rare alleles when looking for loci associated with environmental variation. Doing so means assuming that local adaptation is driven by consequent changes in adaptive allele frequency along environmental gradients. Note, I haven't filtered on MAF here as this dataset was prefiltered. 
+```{r MAF, message=FALSE, warning=FALSE, results='hide', eval=TRUE}
+#freq_mean <- colMeans(allsnps)
+#gen <- allsnps[,-which(freq_mean>=0.95 | freq_mean<=0.01)]
+```
+
+Now, we look read and screen our environmental data.
+```{r read envt data, include=FALSE}
+env <- read.csv("envt.csv")
+```
+
+Tidy envt variables.
+```{r set factors, include= FALSE}
+env$Site <- as.factor(env$Site) # Make Site a factor (not an integer)
+Site <- (env$Site)
+```
+Confirm that genotypes and environmental data are in the same order.
+```{r check order}
+identical(rownames(gen), env[,1]) 
+```
+
+Extract predictor variables to matrix.
+```{r env to matrix}
+env_var <- as.matrix(env[,6:18])
+env_var <- scale(env_var, center=TRUE, scale=TRUE) # center=TRUE, scale=TRUE are the defaults for scale()
+## Recovering scaling coefficients
+scale_env <- attr(env_var, 'scaled:scale')
+center_env <- attr(env_var, 'scaled:center')
+```
+
+### 2. Inferring population structure (from Forester & Capblanqc, 2021)
+
+To account for population structure in some of the following RDA-based procedures we conduct a principal component analysis (PCA) and retain the first six PCs as proxy of population evolutionary history. 
+
+**Note:** No filtering on MAF was applied here because small genetic variations are expected to be involved in differentiating neutral genetic groups.  
+
+PCA was then conducted on this neutral genetic matrix.  
+```{r pca for structure, message=FALSE, warning=FALSE, results='hide', eval=TRUE}
+## Running a PCA on neutral genetic markers
+vcf2 <- read.vcfR('neutral.recode.vcf', verbose = TRUE)
+y.gl <- vcfR2genlight(vcf2)
+y.genind <- gl2gi(y.gl)
+y.genind
+alleles <- y.genind@tab
+alleles[1:10,1:10]
+neutral <- alleles[,seq(1,ncol(alleles),2)]
+dim(neutral)
+```
+```{r pca for structure 2, message=FALSE, warning=FALSE, results='hide', eval=TRUE}
+(sum(is.na(neutral)))/(dim(neutral)[1]*dim(allsnps)[2])*100 # 1,633 NAs in the matrix (~3% missing data)
+neutral <- apply(neutral, 2, function(x) replace(x, is.na(x), as.numeric(names(which.max(table(x))))))
+sum(is.na(neutral))
+pca <- rda(neutral[,-1], scale=T) # PCA in vegan uses the rda() call without any predictors
+```
+
+Screeplot of the PCA eigenvalues:
+```{r, message=FALSE, warning=FALSE, eval=TRUE}
+screeplot(pca, bstick=TRUE, type = "barplot", npcs=20, main="PCA Eigenvalues")
+```
+
+Based on the screeplot, and following the broken stick method, it's reasonable to retain six PCs as a proxy for neutral population structure in downstream analyses.
+```{r retain PCs, message=FALSE, warning=FALSE, results='hide', eval=TRUE}
+## Neutral population structure table
+PCs <- scores(pca, choices=c(1:6), display="sites", scaling=0)
+PopStruct <- data.frame(Population = env[,2], PCs)
+colnames(PopStruct) <- c("Population", "PC1", "PC2", "PC3","PC4","PC5","PC6")
+```
+```{r show pop structure, message=FALSE, warning=FALSE, eval=TRUE, echo=FALSE}
+PopStruct[1:5,]
+```
+ 
+Extract spatial coordinates to include as a condition in RDA.
+```{r remove correlated pairs}
+xy <- as.matrix(cbind(env$x.longtitude., env$y.latitude.))
+```
+
+Merging all variables into a single table + loading mapping features
+```{r merge variables, message=FALSE, warning=FALSE, results='hide', eval=TRUE}
+## Table gathering all variables
+Variables <- data.frame(xy, PopStruct[,-1], env_var)
+```
+```{r show variables, message=FALSE, warning=FALSE, eval=TRUE, echo=FALSE}
+Variables[1:5,]
+```
+
+## 3. Variable selection (from Brauer et al., 2018)
+
+This is a preliminary analysis to identify environmental variables to retain in final RDA model. Here, we reduce SNP data to PCoAs:
+```{r pcoa snps}
+snps.bray <- vegdist(gen, method="bray")
+snp.pcoa <- cmdscale(snps.bray, k=nrow(gen)-1, eig=T, add=T)
+eig <- snp.pcoa$eig/sum(snp.pcoa$eig)
+bst <- unname(bstick(length(eig)))
+axes <- scores(snp.pcoa)
+only <- min(which((eig>bst) == FALSE))
+y <- axes[,c(1:only-1)]
+```
+
+To conduct the selection procedure we used the ordiR2step function of the package vegan and the following stopping criteria: variable significance of p < 0.01 using 1000 permutations, and the adjusted R2 of the global model.  
+
+Forward selection of environmental variables:
+```{r forward selection}
+mod0 <- rda(y ~ TS + MALF + P + FRE3 + DR + AvFl + Alt + AMT + TR + PS + MinT + Feb + MaxT, Variables, scale= FALSE)
+R2.all.env <- RsquareAdj(mod0)$adj.r.squared
+sel <- ordistep(rda(y ~ 1, Variables), scope = formula(mod0), scale= FALSE, direction="forward", pstep = 1000)
+sel <- attributes(sel$terms)$term.labels
+ENV.sel <- Variables[,sel] #subsample space to the selected variables
+```
+
+Generally, the |r| > 0.7 “rule of thumb” is a good guideline for removing correlated predictors. We'll also use a function to check for multicollinearity using Variance Inflation Factors (VIF) and reduce our environment predictors until VIF is <10 for all predictors.
+```{r look for correlations}
+pairs.panels(ENV.sel, scale=T, lm = TRUE)
+## reduce variance associated with correlated environmental PCs using VIF analyses
+```
+
+Define backward selection VIF function
+```{r vif function}
+vif_func<-function(in_frame,thresh=10,trace=T,...){
+  require(fmsb)
+  if(class(in_frame) != 'data.frame') in_frame<-data.frame(in_frame)
+  #get initial vif value for all comparisons of variables
+  vif_init<-NULL
+  var_names <- names(in_frame)
+  for(val in var_names){
+    regressors <- var_names[-which(var_names == val)]
+    form <- paste(regressors, collapse = '+')
+    form_in <- formula(paste(val, '~', form))
+    vif_init<-rbind(vif_init, c(val, VIF(lm(form_in, data = in_frame, ...))))
+  }
+  vif_max<-max(as.numeric(vif_init[,2]))
+  if(vif_max < thresh){
+    if(trace==T){ #print output of each iteration
+      prmatrix(vif_init,collab=c('var','vif'),rowlab=rep('',nrow(vif_init)),quote=F)
+      cat('\n')
+      cat(paste('All variables have VIF < ', thresh,', max VIF ',round(vif_max,2), sep=''),'\n\n')
+    }
+    return(var_names)
+  }
+  else{
+    in_dat<-in_frame
+    #backwards selection of explanatory variables, stops when all VIF values are below 'thresh'
+    while(vif_max >= thresh){
+      vif_vals<-NULL
+      var_names <- names(in_dat)
+      for(val in var_names){
+        regressors <- var_names[-which(var_names == val)]
+        form <- paste(regressors, collapse = '+')
+        form_in <- formula(paste(val, '~', form))
+        vif_add<-VIF(lm(form_in, data = in_dat, ...))
+        vif_vals<-rbind(vif_vals,c(val,vif_add))
+      }
+      max_row<-which(vif_vals[,2] == max(as.numeric(vif_vals[,2])))[1]
+      vif_max<-as.numeric(vif_vals[max_row,2])
+      if(vif_max<thresh) break
+      if(trace==T){ #print output of each iteration
+        prmatrix(vif_vals,collab=c('var','vif'),rowlab=rep('',nrow(vif_vals)),quote=F)
+        cat('\n')
+        cat('removed: ',vif_vals[max_row,1],vif_max,'\n\n')
+        flush.console()
+      }
+      in_dat<-in_dat[,!names(in_dat) %in% vif_vals[max_row,1]]
+    }
+    return(names(in_dat))
+  }
+}
+keep.env <-vif_func(in_frame=ENV.sel,thresh=10,trace=T)
+```
+
+Now we remove variables with the highest VIF one at a time until all remaining variables are below 10
+```{r reevaluate pairs}
+keep.env  # the retained environmental variables
+reduced.env <- subset(as.data.frame(ENV.sel), select=c(keep.env))
+pairs.panels(reduced.env, scale=T, lm = TRUE) # lets have another look. PS removed due to collinearity (|r| > 0.7).
+pred.env <- subset(as.data.frame(ENV.sel), select=c("P","TS","Alt","AvFl","Feb"))
+```
+In total, five of the 13 bioclimate variables were selected: precipitation (P), temperature seasonality (TS), altitude (Alt), average flow (AvFl), and flow seasonality (Feb).
+
+## 4. Variance partitioning: disentangling the drivers of genetic variation (from Capblancq and Forester, 2021)
+
+*Variance partitioning with partial RDA (pRDA) can identify the contribution of different factors to reducing gene flow and triggering genetic divergence among populations.*
+
+Here we apply pRDA-based variance partitioning to decompose the contribution of climate ('clim'), neutral population structure ('struct'), and geography ('geog') in explaining genetic variation.
+```{r full model, message=TRUE, echo=TRUE, eval=TRUE}
+## Full model
+pRDAfull <- rda(gen ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + xy + P + TS + AvFl + Alt + Feb,  Variables)
+RsquareAdj(pRDAfull)
+#anova(pRDAfull)
+```
+```{r clim only, message=TRUE, echo=TRUE, eval=TRUE}
+## Pure climate model
+pRDAclim <- rda(gen ~ P + TS + AvFl + Alt + Feb + Condition(xy + PC1 + PC2 + PC3 + PC4 + PC5 + PC6),  Variables)
+RsquareAdj(pRDAclim)
+#anova(pRDAclim)
+```
+```{r struct only, message=TRUE, echo=TRUE, eval=TRUE}
+## Pure neutral population structure model  
+pRDAstruct <- rda(gen ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + Condition(xy + P + TS + AvFl + Alt + Feb),  Variables)
+RsquareAdj(pRDAstruct)
+#anova(pRDAstruct)
+```
+```{r geog only, message=TRUE, echo=TRUE, eval=TRUE}
+##Pure geography model 
+pRDAgeog <- rda(gen ~ X1 + X2 + Condition(P + TS + AvFl + Alt + Feb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6),  Variables) 
+RsquareAdj(pRDAgeog)
+#anova(pRDAgeog)
+```
+
+We can visually assess the degree of correlation among variables using a correlogram:
+```{r, message=TRUE, eval=TRUE, echo=FALSE, fig.align='center'}
+library(corrplot)
+corrplot(cor(Variables[, c("PC1","PC2","PC3","PC4","PC5","PC6","P","TS", "AvFl","Alt","Feb","X1","X2")]), type="upper")
+```
+
+**See Capblancq and Forester (2021) for notes on interpretation and best practices:**
+
+
+## 4. Run the RDA
+
+Run reduced RDA model using the retained environmental PCs conditioned on the retained spatial variables
+```{r run RDA}
+koura.rda <- rda(gen ~ P + TS + AvFl + Alt + Feb + Condition(PC1 + PC2), data = Variables)
+koura.rda
+```
+
+Calculate adjusted R2 (based on number predictors)
+```{r R2}
+RsquareAdj(koura.rda) 
+```
+
+Our constrained ordination explains about 6.8% of the variation. Low explanatory power is generally expected given that we expect that most of the SNPs in our dataset will not show a relationship with the environmental predictors (e.g., most SNPs will be neutral).
+
+The eigenvalues for the constrained axes reflect the variance explained by each canonical axis:
+
+```{r eigenvalues}
+summary(eigenvals(koura.rda, model = "constrained"))
+```
+```{r screeplot}
+screeplot(koura.rda)
+```
+
+Here, we can see that the first three constrained axes explain most of the variance. The screeplot provides an informal (and quick) way to determine how many constrained axes to include when we search for candidate SNPs (below). We could start by investigating RDA axes that explain the most variance (excluding those after the “drop off” point in the screeplot.)
+
+Now let’s check our RDA model for significance using formal tests. We can assess both the full model, marginal terms and each constrained axis using F-statistics (Legendre et al, 2010). The null hypothesis is that no linear relationship exists between the SNP data and the environmental predictors.
+
+```{r sig}
+signif.model <- anova.cca(koura.rda, parallel=getOption("mc.cores"), nperm=1000) #test full model significance
+signif.perm <- anova.cca(koura.rda, by="margin", parallel=getOption("mc.cores"), nperm=1000) #test marginal effect of each individual term in the model
+signif.model
+signif.perm
+```
+
+Full model and all seven marginal terms are highly significant. Finally, we can check each axis for significance.
+```{r sig axes}
+signif.axis <- anova.cca(koura.rda, by="axis", parallel=getOption("mc.cores"), nperm=1000)
+signif.axis
+Site
+```
+
+Let's quickly plot the RDA.
+```{r quickly, echo=FALSE}
+library(ggord)
+ggord(koura.rda, env$Site, axes = c("1", "2"), addsize = 1, addcol = "black") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) # looking at the raw code, this is plotting the 'wa scores', the blue dots are different species
+ggsave("ggRDA1,2.png", width = 8, height = 8, dpi = 300)
+ggord(koura.rda, env$Site, axes = c("3", "4"),  addsize = 1, addcol = "black") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) # looking at the raw code, this is plotting the 'wa scores', the blue dots are different species 
+ggsave("ggRDA3,4.png", width = 8, height = 8, dpi = 300)
+```
+Replotting with colour coding for publication.
+```{r plot RDA, echo=FALSE}
+lab1 <- paste0("RDA1 (", paste(round((koura.rda$CCA$eig[1]/koura.rda$CCA$tot.chi*100),2)),"%)")
+lab2 <- paste0("RDA2 (", paste(round((koura.rda$CCA$eig[2]/koura.rda$CCA$tot.chi*100),2)),"%)")
+site_colvec = c("#272D6A", "#5C6E9D",  "#5C6E9D", "#6488CC", "#6488CC", "#93A1D0", "#93A1D0","#93A1D0", "#93A1D0","#93A1D0","#93A1D0","#93A1D0", "#C4CCF1", "#C4CCF1","#E6E9F7")
+site_pch = c(22, 22,23, 21, 22, 21, 22, 23,24,25,3, 8,21, 22, 23)
+#set colours and labels for legend
+site_leglabs <- c("W1", "W2", "W4", "O1", "O2", "O3", "O4", "O5", "O6", "O7", "O8", "O9", "M2", "M4", "M5")
+site_legcols <- c("#C4CCF1", "#C4CCF1","#E6E9F7","#6488CC", "#6488CC", "#93A1D0", "#93A1D0","#93A1D0", "#93A1D0","#93A1D0","#93A1D0","#93A1D0", "#272D6A", "#5C6E9D", "#5C6E9D")
+site_legpch <- c(21, 22, 23, 21, 22, 21, 22, 23,24,25,3, 8, 22, 22,23)
+#plot RDA1, RDA2
+pdf(file = "RDA-1,2.pdf", height = 6, width = 6)
+plot(koura.rda, type="n", scaling=3,  xlim=c(-3,3), ylim=c(-3,3), cex.lab=1, xlab=lab1, ylab=lab2)
+#points(koura.rda, display="species", pch=20, cex=0.7, col="gray32", scaling=3)           # the SNPs
+points(koura.rda, display="sites",  col = "black", pch = site_pch[Site], cex=0.7, bg = site_colvec[Site]) # the koura
+text(koura.rda, scaling=3, display="bp", col="#0868ac", cex=1) # the predictors
+legend("topright", legend=site_leglabs, bty="n", pt.bg=site_legcols, pch=site_legpch, cex=0.7, col="black")
+dev.off()
+```
+
+## 5. Identify candidate SNPs (from Capblancq & Forester, 2021)
+
+We’ll use a short function ('rdadapt') to idenfity SNPs with significant loadings on the first two RDA axes. 
+
+```{r identify outliers b}
+rdadapt <- function(rda,K)
+{
+  zscores<-rda$CCA$v[,1:as.numeric(K)]
+  resscale <- apply(zscores, 2, scale)
+  resmaha <- covRob(resscale, distance = TRUE, na.action= na.omit, estim="pairwiseGK")$dist
+  lambda <- median(resmaha)/qchisq(0.5,df=K)
+  reschi2test <- pchisq(resmaha/lambda,K,lower.tail=FALSE)
+  qval <- qvalue(reschi2test)
+  q.values_rdadapt<-qval$qvalues
+  return(data.frame(p.values=reschi2test, q.values=q.values_rdadapt))
+}
+rdadapt_env<-rdadapt(koura.rda, 2) # first two RDA axes
+## P-values threshold after Bonferroni correction
+thres_env <- 0.01/length(rdadapt_env$p.values)
+## Identifying the loci that are below the p-value threshold
+outliers.rdadapt <- data.frame(Loci = colnames(gen)[which(rdadapt_env$p.values<thres_env)], p.value = rdadapt_env$p.values[which(rdadapt_env$p.values<thres_env)], contig = unlist(lapply(strsplit(colnames(gen)[which(rdadapt_env$p.values<thres_env)], split = "_"), function(x) x[1])))
+outliers.rdadapt
+## Top hit outlier per contig
+outliers.rdadapt <- outliers.rdadapt[order(outliers.rdadapt$contig, outliers.rdadapt$p.value),]
+## List of outlier names
+outliers_rdadapt_env <- as.character(outliers.rdadapt$Loci[!duplicated(outliers.rdadapt$contig)])
+length(outliers_rdadapt_env)
+```
+
+Let's look at these using a Manhattan and and biplot.
+```{r plot RDAdapt}
+locus_scores <- scores(koura.rda, choices=c(1:2), display="species", scaling="none") # vegan references "species", here these are the loci
+TAB_loci <- data.frame(names = row.names(locus_scores), locus_scores)
+TAB_loci$type <- "Neutral"
+TAB_loci$type[TAB_loci$names%in%outliers.rdadapt$Loci] <- "All outliers"
+TAB_loci$type[TAB_loci$names%in%outliers_rdadapt_env] <- "Top outliers"
+TAB_loci$type <- factor(TAB_loci$type, levels = c("Neutral", "All outliers", "Top outliers"))
+TAB_loci <- TAB_loci[order(TAB_loci$type),]
+TAB_var <- as.data.frame(scores(koura.rda, choices=c(1,2), display="bp")) # pull the biplot scores
+## Biplot of RDA loci and variables scores
+ggplot() +
+  geom_hline(yintercept=0, linetype="dashed", color = gray(.80), size=0.6) +
+  geom_vline(xintercept=0, linetype="dashed", color = gray(.80), size=0.6) +
+  geom_point(data = TAB_loci, aes(x=RDA1*20, y=RDA2*20, colour = type), size = 1.4) +
+  scale_color_manual(values = c("gray90", "#F9A242FF", "#6B4596FF")) +
+  geom_segment(data = TAB_var, aes(xend=RDA1, yend=RDA2, x=0, y=0), colour="black", size=0.15, linetype=1, arrow=arrow(length = unit(0.02, "npc"))) +
+  geom_text(data = TAB_var, aes(x=1.1*RDA1, y=1.1*RDA2, label = row.names(TAB_var)), size = 2.5, family = "Times") +
+  xlab("RDA 1") + ylab("RDA 2") +
+  facet_wrap(~"RDA space") +
+  guides(color=guide_legend(title="Locus type")) +
+  theme_bw(base_size = 11, base_family = "Times") +
+  theme(panel.background = element_blank(), legend.background = element_blank(), panel.grid = element_blank(), plot.background = element_blank(), legend.text=element_text(size=rel(.8)), strip.text = element_text(size=11))
+ggsave("Biplot.png", width = 8, height = 8, dpi = 300)
+## Manhattan plot
+Outliers <- rep("Neutral", length(colnames(gen)))
+Outliers[colnames(gen)%in%outliers.rdadapt$Loci] <- "All outliers"
+Outliers[colnames(gen)%in%outliers_rdadapt_env] <- "Top outliers"
+Outliers <- factor(Outliers, levels = c("Neutral", "All outliers", "Top outliers"))
+TAB_manhattan <- data.frame(pos = 1:length(colnames(gen)), 
+                           pvalues = rdadapt_env$p.values, 
+                           Outliers = Outliers)
+TAB_manhattan <- TAB_manhattan[order(TAB_manhattan$Outliers),]
+ggplot(data = TAB_manhattan) +
+  geom_point(aes(x=pos, y=-log10(pvalues), col = Outliers), size=1.4) +
+  scale_color_manual(values = c("gray90", "#F9A242FF", "#6B4596FF")) +
+  xlab("Loci") + ylab("-log10(p.values)") +
+  geom_hline(yintercept=-log10(thres_env), linetype="dashed", color = gray(.80), size=0.6) +
+  facet_wrap(~"Manhattan plot", nrow = 3) +
+  guides(color=guide_legend(title="Locus type")) +
+  theme_bw(base_size = 11, base_family = "Times") +
+  theme(legend.position="right", legend.background = element_blank(), panel.grid = element_blank(), legend.box.background = element_blank(), plot.background = element_blank(), panel.background = element_blank(), legend.text=element_text(size=rel(.8)), strip.text = element_text(size=11))
+ggsave("manhattan.png", width = 8, height = 8, dpi = 300)
+```
+
+We identified 387 loci showing extreme association with the environment, reduced to a set of 353 unlinked outliers when retaining only the best hit for each genomic contig.

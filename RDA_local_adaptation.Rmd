@@ -79,7 +79,7 @@ scale_env <- attr(env_var, 'scaled:scale')
 center_env <- attr(env_var, 'scaled:center')
 ```
 
-### 2. Inferring population structure (from Forester & Capblanqc, 2021)
+### 2. Inferring population structure (from Capblancq & Forester, 2021)
 
 To account for population structure in some of the following RDA-based procedures we conduct a principal component analysis (PCA) and retain the first six PCs as proxy of population evolutionary history. 
 
@@ -226,7 +226,7 @@ pred.env <- subset(as.data.frame(ENV.sel), select=c("P","TS","Alt","AvFl","Feb")
 ```
 In total, five of the 13 bioclimate variables were selected: precipitation (P), temperature seasonality (TS), altitude (Alt), average flow (AvFl), and flow seasonality (Feb).
 
-## 4. Variance partitioning: disentangling the drivers of genetic variation (from Capblancq and Forester, 2021)
+## 4. Variance partitioning: disentangling the drivers of genetic variation (from Capblancq & Forester, 2021)
 
 *Variance partitioning with partial RDA (pRDA) can identify the contribution of different factors to reducing gene flow and triggering genetic divergence among populations.*
 

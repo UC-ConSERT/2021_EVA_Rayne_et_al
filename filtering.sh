@@ -12,12 +12,7 @@ cp $SCRIPT $LOG_FOLDER/"$TIMESTAMP"_"$NAME"
 
 ## A very basic (not aesthetic) script for filtering GBS data with vcftools
 ## Files were demultiplexed and barcodes/adaptors trimmed with https://github.com/Lanilen/GBS-PreProcess; and SNPs were genotyped using Stacks2 (refmap.pl wrapper)
- 
-echo 'Renaming samples' # some samples needed renaming first
-bcftools reheader --samples rename.txt -o renamed-unfiltered.vcf unfiltered.vcf
 
-echo 'Removing duplicates and planifrons' # removing unnecessary samples (duplicates previously checked with PCA)
-vcftools --vcf 01_renamed-unfiltered.vcf --remove remove_DUPLICATES.txt  --recode --recode-INFO-all --stdout > 02_wildunfiltered.vcf
 
 echo 'Initial filter for minimum mean depth of 10, maximum missingness and remove indels 0.5'
 vcftools --vcf 02_wildunfiltered.vcf --max-missing 0.5 --remove-indels --min-meanDP 10 --recode --recode-INFO-all --stdout > 03_geno0.5minmeanDP10removedindels.vcf

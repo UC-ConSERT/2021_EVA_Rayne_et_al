@@ -20,7 +20,7 @@ vcftools --vcf 00_kourarawGBS.vcf --max-missing 0.5 --remove-indels --min-meanDP
 echo 'Keeping individuals with <90% missingness'
 mkdir missing-out
 vcftools --vcf 01_geno0.5minmeanDP10removedindels.vcf --missing-indv --out ./missing-out/90
-mawk '$5 > 0.9' ./missing-out/90.imiss | cut -f1 > remove90.indv
+mawk '$5 > 0.9' ./missing-out/90.imiss | cut -f1 > remove90.txt
 vcftools --vcf 01_geno0.5minmeanDP10removedindels.vcf --remove remove90.txt  --recode --recode-INFO-all --out 02_geno0.5miss90
 
 echo 'Removing loci with fewer than 60% SNPs'
@@ -71,8 +71,7 @@ echo 'Retaining biallelic SNPs only'
 bcftools view -c 1 -v snps 13_geno0.95miss10mac.vcf -o 14_filtered.vcf
 vcftools --vcf 14_filtered.vcf --recode --recode-INFO-all --out 14_filtered
 rm 14_filtered.vcf
-vcftools --vcf 14_filtered.recode.vcf --missing-indv --out ./missing-out/final
-cut -f1 ./missing-out/final.imiss > popmap.txt # create popmap file
-populations -V 14_filtered.recode.vcf -M popmap.txt -p 19 -r 0.01  -O ./ --vcf # to get populations summary output from Stacks
+vcftools --vcf 14_filtered.recode.vcf --missing-indv --out ./missing-out/14_filtered
 
+mv *.log ./
 echo 'Heck yeah, we are finished.'

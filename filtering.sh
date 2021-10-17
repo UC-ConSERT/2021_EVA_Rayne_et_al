@@ -73,5 +73,5 @@ vcftools --vcf 14_filtered.vcf --recode --recode-INFO-all --out 14_filtered
 rm 14_filtered.vcf
 vcftools --vcf 14_filtered.recode.vcf --missing-indv --out ./missing-out/14_filtered
 
-mv *.log ./
+mv *.log ./log_files
 echo 'Heck yeah, we are finished.'
